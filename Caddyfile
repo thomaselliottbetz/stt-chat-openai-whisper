@@ -1,0 +1,21 @@
+# Caddyfile configuration for reverse proxy and TLS termination
+# Replace example.com with actual domain name
+
+example.com, www.example.com {
+    root * /var/www/html
+
+    # API endpoints (FastAPI backend)
+    reverse_proxy /api/* 127.0.0.1:8000
+    reverse_proxy /transcription-callback 127.0.0.1:8000
+    reverse_proxy /ws 127.0.0.1:8000
+
+    # Static file server for frontend
+    file_server
+
+    # Logging
+    log {
+        output file /var/log/caddy/application.log
+        format json
+    }
+}
+
