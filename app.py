@@ -2,6 +2,7 @@
 FastAPI backend for chat application with speech-to-text transcription.
 Handles user authentication, chat management, and real-time messaging via WebSockets.
 """
+import re
 import sqlite3
 import os
 import uuid
@@ -110,10 +111,16 @@ async def get_current_user(request: Request):
     token = request.cookies.get("session_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    user_id = app.state.sessions.get(token)
-    if not user_id:
+    db = get_db()
+    cur = db.execute(
+        "SELECT user_id FROM sessions WHERE token = ? AND created_at > datetime('now', '-30 days')",
+        (token,),
+    )
+    row = cur.fetchone()
+    db.close()
+    if not row:
         raise HTTPException(status_code=401, detail="Invalid session")
-    return user_id
+    return row[0]
 
 
 @app.post("/api/get-presigned-url")
@@ -138,48 +145,6 @@ async def get_presigned_url(
     return {"url": url, "key": key}
 
 
-@app.get("/api/get-transcription")
-def get_transcription(request: Request):
-    key = request.query_params.get("key")
-    if not key:
-        raise HTTPException(status_code=400, detail="Missing key")
-
-    # Extract UUID from incoming key (e.g., uploads/uuid.webm → uuid)
-    uuid_part = os.path.splitext(os.path.basename(key))[0]
-
-    # List objects in OUTPUT_BUCKET and find matching suffix
-    try:
-        response = s3.list_objects_v2(Bucket=OUTPUT_BUCKET)
-        for obj in response.get("Contents", []):
-            obj_key = obj["Key"]
-            if obj_key.endswith(f"{uuid_part}.json"):
-                file = s3.get_object(Bucket=OUTPUT_BUCKET, Key=obj_key)
-                data = json.loads(file["Body"].read().decode("utf-8"))
-                return {"transcription": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    raise HTTPException(status_code=204, detail="Transcription not ready")
-
-
-@app.get("/api/get-transcription-feed")
-def get_transcription_feed():
-    try:
-        response = s3.list_objects_v2(Bucket=OUTPUT_BUCKET)
-        items = []
-
-        for obj in sorted(response.get("Contents", []), key=lambda x: x["Key"]):
-            key = obj["Key"]
-            if key.endswith(".json"):
-                file = s3.get_object(Bucket=OUTPUT_BUCKET, Key=key)
-                data = json.loads(file["Body"].read().decode("utf-8"))
-                items.append({"key": key, "text": data.get("text", "")})
-
-        return {"transcriptions": items}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -201,11 +166,19 @@ async def websocket_endpoint(websocket: WebSocket):
             return
 
         token = data.get("token")
-        if not token or token not in app.state.sessions:
+        if not token:
             await websocket.close(code=1008)
             return
 
-        user_id = app.state.sessions[token]
+        db = get_db()
+        cur = db.execute("SELECT user_id FROM sessions WHERE token = ? AND created_at > datetime('now', '-30 days')", (token,))
+        row = cur.fetchone()
+        db.close()
+        if not row:
+            await websocket.close(code=1008)
+            return
+
+        user_id = row[0]
         username = get_username_by_id(user_id)
 
         # Replace old connection if user reconnects
@@ -240,7 +213,7 @@ async def transcription_callback(request: Request):
     data = await request.json()
 
     # 1 — auth
-    if data.get("secret") != SHARED_SECRET:
+    if not secrets.compare_digest(data.get("secret", ""), SHARED_SECRET):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     message = data.get("message")
@@ -344,6 +317,9 @@ async def transcription_callback(request: Request):
 async def register(
     username: str = Form(...), password: str = Form(...), invite_code: str = Form(...)
 ):
+    if not username or len(username) > 64 or not re.match(r'^[\w\-]+$', username):
+        raise HTTPException(status_code=400, detail="Username must be 1–64 characters and contain only letters, numbers, underscores, or hyphens")
+
     db = get_db()
 
     # Validate invite code
@@ -434,6 +410,11 @@ async def logout(response: Response, request: Request):
     token = request.cookies.get("session_token")
     if token and token in app.state.sessions:
         del app.state.sessions[token]
+    if token:
+        db = get_db()
+        db.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        db.commit()
+        db.close()
     response.delete_cookie("session_token")
     return {"status": "logged_out"}
 
@@ -797,7 +778,7 @@ def validate_session(session_token: str = Cookie(None)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, username FROM users WHERE id = (SELECT user_id FROM sessions WHERE token = ?)",
+        "SELECT id, username FROM users WHERE id = (SELECT user_id FROM sessions WHERE token = ? AND created_at > datetime('now', '-30 days'))",
         (session_token,),
     )
     row = cur.fetchone()
@@ -820,12 +801,19 @@ def mark_chat_read(data: dict, session_token: str = Cookie(None)):
 
     now = datetime.now(PACIFIC).isoformat(timespec="seconds")
     with engine.begin() as conn:
+        check = conn.execute(
+            text("SELECT 1 FROM chat_participants WHERE chat_id = :cid AND user_id = :uid"),
+            {"cid": chat_id, "uid": user_id},
+        ).fetchone()
+        if not check:
+            raise HTTPException(status_code=403, detail="Not in chat")
+
         conn.execute(
             text(
                 """
                 INSERT INTO chat_reads (chat_id, user_id, viewed_at)
                 VALUES (:cid, :uid, :ts)
-                ON CONFLICT(chat_id, user_id) 
+                ON CONFLICT(chat_id, user_id)
                 DO UPDATE SET viewed_at = :ts
                 """
             ),
