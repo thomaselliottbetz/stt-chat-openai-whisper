@@ -7,19 +7,18 @@
  * 
  * Design Notes:
  * - Sessions expire after 30 days (configurable via expires_at)
- * - Usernames are limited to 3-50 characters
+ * - Usernames are limited to 1-64 characters
  * - Messages are limited to 10,000 characters
  * - All chats are currently one-on-one (is_group = 0)
  * - Foreign keys cascade on delete for data integrity
  * - Comprehensive indexes for performance optimization
  * 
- * To migrate an existing database to this schema, see migrate_schema.sql
  */
 
 -- Users table: Stores user accounts with hashed passwords
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL CHECK(LENGTH(username) >= 3 AND LENGTH(username) <= 50),
+    username TEXT UNIQUE NOT NULL CHECK(LENGTH(username) >= 1 AND LENGTH(username) <= 64),
     password_hash TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

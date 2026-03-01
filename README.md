@@ -1,4 +1,4 @@
-# Speech-To-Text Chat Application
+# Speech-To-Text Chat Application — v1.1
 
 A real-time chat application with OpenAI Whisper model speech-to-text transcription, designed for use between an admin and invited users.
 
@@ -40,7 +40,6 @@ A real-time chat application with OpenAI Whisper model speech-to-text transcript
 ├── main.js                # Frontend JavaScript
 ├── main.css               # Frontend styles
 ├── schema.sql             # Database schema (best practices)
-├── cleanup_sessions.sql   # Session cleanup script
 ├── Dockerfile             # Lambda container definition
 ├── Caddyfile              # Caddy web server configuration
 ├── requirements.txt       # Python dependencies
@@ -78,11 +77,6 @@ For Lambda function, set (all required):
 1. Create database from schema:
    ```bash
    sqlite3 app.db < schema.sql
-   ```
-
-2. Or migrate existing database:
-   ```bash
-   sqlite3 app.db < migrate_schema.sql
    ```
 
 ### Running the Application
@@ -138,13 +132,13 @@ See `schema.sql` for the complete schema with indexes and constraints.
 Run periodically to remove expired sessions:
 
 ```bash
-sqlite3 app.db < cleanup_sessions.sql
+sqlite3 app.db "DELETE FROM sessions WHERE created_at <= datetime('now', '-30 days');"
 ```
 
 Or set up a cron job:
 
 ```bash
-0 2 * * * sqlite3 /path/to/app.db < /path/to/cleanup_sessions.sql
+0 2 * * * sqlite3 /path/to/app.db "DELETE FROM sessions WHERE created_at <= datetime('now', '-30 days');"
 ```
 
 ## Development Notes
